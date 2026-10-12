@@ -1,6 +1,6 @@
 streamlit
 chromadb
 sentence-transformers
-langchain-google-genai
-langchain-text-splitters
 pypdf
+langchain-text-splitters
+langchain-google-genai
