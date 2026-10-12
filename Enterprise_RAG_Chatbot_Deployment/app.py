@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -10,7 +11,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 # --------------------------------------------------
-# 1. Page Settings
+# 1. Streamlit Page Settings
 # --------------------------------------------------
 
 st.set_page_config(
@@ -38,16 +39,18 @@ CHROMA_PATH = BASE_DIR / "chroma_db"
 
 
 # --------------------------------------------------
-# 3. Load Resources
+# 3. Load Model, ChromaDB and Gemini
 # --------------------------------------------------
 
 @st.cache_resource
 def load_resources():
 
     # Load embedding model
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    model = SentenceTransformer(
+        "all-MiniLM-L6-v2"
+    )
 
-    # Create local ChromaDB
+    # Create/load ChromaDB
     client = chromadb.PersistentClient(
         path=str(CHROMA_PATH)
     )
@@ -57,7 +60,7 @@ def load_resources():
     )
 
     # --------------------------------------------------
-    # Create database if it is empty
+    # Create embeddings only if database is empty
     # --------------------------------------------------
 
     if collection.count() == 0:
@@ -81,7 +84,9 @@ def load_resources():
 
         for pdf_file in PDF_FILES:
 
-            reader = PdfReader(str(pdf_file))
+            reader = PdfReader(
+                str(pdf_file)
+            )
 
             text = ""
 
@@ -92,17 +97,15 @@ def load_resources():
                 if page_text:
                     text += " " + page_text
 
-            # Clean whitespace
-            import re
-
             text = re.sub(
                 r"\s+",
                 " ",
                 text
             ).strip()
 
-            # Create chunks
-            chunks = text_splitter.split_text(text)
+            chunks = text_splitter.split_text(
+                text
+            )
 
             for i, chunk in enumerate(chunks):
 
@@ -113,13 +116,12 @@ def load_resources():
                     "chunk_index": i
                 })
 
-        # Create embeddings
+        # Generate embeddings
         embeddings = model.encode(
             all_chunks,
             show_progress_bar=False
         )
 
-        # Store in ChromaDB
         ids = [
             f"chunk_{i}"
             for i in range(len(all_chunks))
@@ -133,15 +135,21 @@ def load_resources():
         )
 
     # --------------------------------------------------
-    # Gemini API
+    # Load Gemini API Key
     # --------------------------------------------------
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get(
+        "GOOGLE_API_KEY"
+    )
 
     if not api_key:
         raise ValueError(
             "GOOGLE_API_KEY is not configured."
         )
+
+    # --------------------------------------------------
+    # Gemini Model
+    # --------------------------------------------------
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.5-flash-lite",
@@ -152,21 +160,27 @@ def load_resources():
     return model, collection, llm
 
 
-# Load everything
+# --------------------------------------------------
+# 4. Load Resources
+# --------------------------------------------------
+
 model, collection, llm = load_resources()
 
 
 # --------------------------------------------------
-# 4. Chat History
+# 5. Chat History
 # --------------------------------------------------
 
 if "messages" not in st.session_state:
+
     st.session_state.messages = []
 
 
 for message in st.session_state.messages:
 
-    with st.chat_message(message["role"]):
+    with st.chat_message(
+        message["role"]
+    ):
 
         st.markdown(
             message["content"]
@@ -174,14 +188,20 @@ for message in st.session_state.messages:
 
         if message.get("sources"):
 
-            with st.expander("View sources"):
+            with st.expander(
+                "View sources"
+            ):
 
                 for source in message["sources"]:
-                    st.write("📄", source)
+
+                    st.write(
+                        "📄",
+                        source
+                    )
 
 
 # --------------------------------------------------
-# 5. User Question
+# 6. User Question
 # --------------------------------------------------
 
 question = st.chat_input(
@@ -191,18 +211,21 @@ question = st.chat_input(
 
 if question:
 
-    # Add user question
+    # Store user question
     st.session_state.messages.append({
         "role": "user",
         "content": question
     })
 
     with st.chat_message("user"):
-        st.markdown(question)
+
+        st.markdown(
+            question
+        )
 
 
     # --------------------------------------------------
-    # 6. Generate Answer
+    # 7. Generate Answer
     # --------------------------------------------------
 
     with st.chat_message("assistant"):
@@ -213,13 +236,19 @@ if question:
 
             try:
 
-                # Create question embedding
+                # --------------------------------------------------
+                # Convert question into embedding
+                # --------------------------------------------------
+
                 question_embedding = model.encode(
                     question
                 )
 
 
+                # --------------------------------------------------
                 # Search ChromaDB
+                # --------------------------------------------------
+
                 results = collection.query(
                     query_embeddings=[
                         question_embedding.tolist()
@@ -234,15 +263,20 @@ if question:
 
 
                 docs = results["documents"][0]
+
                 metas = results["metadatas"][0]
+
                 distances = results["distances"][0]
 
 
-                # Retrieval threshold
+                # --------------------------------------------------
+                # Retrieval Threshold
+                # --------------------------------------------------
+
                 threshold = 1.2
 
-
                 relevant_docs = []
+
                 relevant_metas = []
 
 
@@ -254,12 +288,17 @@ if question:
 
                     if distance <= threshold:
 
-                        relevant_docs.append(doc)
-                        relevant_metas.append(meta)
+                        relevant_docs.append(
+                            doc
+                        )
+
+                        relevant_metas.append(
+                            meta
+                        )
 
 
                 # --------------------------------------------------
-                # 7. No Relevant Information
+                # No Relevant Information
                 # --------------------------------------------------
 
                 if not relevant_docs:
@@ -273,7 +312,7 @@ if question:
 
 
                 # --------------------------------------------------
-                # 8. Generate Answer Using Gemini
+                # Relevant Information Found
                 # --------------------------------------------------
 
                 else:
@@ -295,6 +334,9 @@ If the answer is not available in the context, say:
 
 "I couldn't find this information in the provided documents."
 
+Give a clear and simple answer.
+Do not mention that you are an AI model.
+
 Context:
 
 {context}
@@ -307,6 +349,10 @@ Answer:
 """
 
 
+                    # --------------------------------------------------
+                    # Call Gemini
+                    # --------------------------------------------------
+
                     response = llm.invoke(
                         prompt
                     )
@@ -314,6 +360,10 @@ Answer:
 
                     content = response.content
 
+
+                    # --------------------------------------------------
+                    # Process Gemini Response
+                    # --------------------------------------------------
 
                     if isinstance(
                         content,
@@ -328,14 +378,24 @@ Answer:
                         list
                     ):
 
+                        answer_parts = []
+
+                        for item in content:
+
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "text"
+                            ):
+
+                                answer_parts.append(
+                                    item.get(
+                                        "text",
+                                        ""
+                                    )
+                                )
+
                         answer = "\n".join(
-                            item.get("text", "")
-                            for item in content
-                            if isinstance(
-                                item,
-                                dict
-                            )
-                            and item.get("type") == "text"
+                            answer_parts
                         )
 
 
@@ -347,11 +407,10 @@ Answer:
 
 
                     # --------------------------------------------------
-                    # 9. Get Sources
+                    # Collect Sources
                     # --------------------------------------------------
 
                     sources = []
-
 
                     for meta in relevant_metas:
 
@@ -359,7 +418,6 @@ Answer:
                             "source",
                             "Unknown"
                         )
-
 
                         if source not in sources:
 
@@ -369,13 +427,17 @@ Answer:
 
 
                 # --------------------------------------------------
-                # 10. Display Answer
+                # Display Answer
                 # --------------------------------------------------
 
                 st.markdown(
                     answer
                 )
 
+
+                # --------------------------------------------------
+                # Display Sources
+                # --------------------------------------------------
 
                 if sources:
 
@@ -391,11 +453,18 @@ Answer:
                             )
 
 
-                # Save assistant response
+                # --------------------------------------------------
+                # Save Assistant Message
+                # --------------------------------------------------
+
                 st.session_state.messages.append({
+
                     "role": "assistant",
+
                     "content": answer,
+
                     "sources": sources
+
                 })
 
 
