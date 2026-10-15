@@ -10,9 +10,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-# --------------------------------------------------
-# 1. Streamlit Page Settings
-# --------------------------------------------------
+# ---------------------------------------------------------
+# STREAMLIT PAGE SETTINGS
+# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="NLP Knowledge Chatbot",
@@ -24,9 +24,9 @@ st.title("NLP Knowledge Chatbot")
 st.caption("AI-powered document question-answering system")
 
 
-# --------------------------------------------------
-# 2. Project Paths
-# --------------------------------------------------
+# ---------------------------------------------------------
+# PROJECT PATHS
+# ---------------------------------------------------------
 
 BASE_DIR = Path(__file__).parent
 
@@ -38,9 +38,39 @@ PDF_FILES = [
 CHROMA_PATH = BASE_DIR / "chroma_db"
 
 
-# --------------------------------------------------
-# 3. Load Model, ChromaDB and Gemini
-# --------------------------------------------------
+# ---------------------------------------------------------
+# ABBREVIATION MAP
+# ---------------------------------------------------------
+
+abbreviation_map = {
+    "vsm": "vector space model",
+    "tf-idf": "term frequency inverse document frequency",
+    "tfidf": "term frequency inverse document frequency",
+    "nlp": "natural language processing"
+}
+
+
+def expand_abbreviations(question):
+
+    expanded_question = question
+
+    for abbreviation, meaning in abbreviation_map.items():
+
+        pattern = r"\b" + re.escape(abbreviation) + r"\b"
+
+        expanded_question = re.sub(
+            pattern,
+            f"{abbreviation} ({meaning})",
+            expanded_question,
+            flags=re.IGNORECASE
+        )
+
+    return expanded_question
+
+
+# ---------------------------------------------------------
+# LOAD MODEL, CHROMADB AND GEMINI
+# ---------------------------------------------------------
 
 @st.cache_resource
 def load_resources():
@@ -50,7 +80,7 @@ def load_resources():
         "all-MiniLM-L6-v2"
     )
 
-    # Create/load ChromaDB
+    # Connect to ChromaDB
     client = chromadb.PersistentClient(
         path=str(CHROMA_PATH)
     )
@@ -59,9 +89,9 @@ def load_resources():
         name="nlp_combined"
     )
 
-    # --------------------------------------------------
-    # Create embeddings only if database is empty
-    # --------------------------------------------------
+    # -----------------------------------------------------
+    # CREATE KNOWLEDGE BASE IF EMPTY
+    # -----------------------------------------------------
 
     if collection.count() == 0:
 
@@ -95,14 +125,17 @@ def load_resources():
                 page_text = page.extract_text()
 
                 if page_text:
+
                     text += " " + page_text
 
+            # Clean extracted text
             text = re.sub(
                 r"\s+",
                 " ",
                 text
             ).strip()
 
+            # Split document into chunks
             chunks = text_splitter.split_text(
                 text
             )
@@ -127,6 +160,7 @@ def load_resources():
             for i in range(len(all_chunks))
         ]
 
+        # Store in ChromaDB
         collection.upsert(
             ids=ids,
             documents=all_chunks,
@@ -134,22 +168,23 @@ def load_resources():
             metadatas=all_metadatas
         )
 
-    # --------------------------------------------------
-    # Load Gemini API Key
-    # --------------------------------------------------
+    # -----------------------------------------------------
+    # LOAD GEMINI API KEY
+    # -----------------------------------------------------
 
     api_key = os.environ.get(
         "GOOGLE_API_KEY"
     )
 
     if not api_key:
+
         raise ValueError(
             "GOOGLE_API_KEY is not configured."
         )
 
-    # --------------------------------------------------
-    # Gemini Model
-    # --------------------------------------------------
+    # -----------------------------------------------------
+    # GEMINI MODEL
+    # -----------------------------------------------------
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.5-flash-lite",
@@ -160,21 +195,388 @@ def load_resources():
     return model, collection, llm
 
 
-# --------------------------------------------------
-# 4. Load Resources
-# --------------------------------------------------
-
+# Load resources
 model, collection, llm = load_resources()
 
 
-# --------------------------------------------------
-# 5. Chat History
-# --------------------------------------------------
+# ---------------------------------------------------------
+# SESSION STATE
+# ---------------------------------------------------------
 
 if "messages" not in st.session_state:
 
     st.session_state.messages = []
 
+
+if "conversation_history" not in st.session_state:
+
+    st.session_state.conversation_history = []
+
+
+# ---------------------------------------------------------
+# CLEAR CHAT BUTTON
+# ---------------------------------------------------------
+
+if st.sidebar.button("Clear Chat"):
+
+    st.session_state.messages = []
+
+    st.session_state.conversation_history = []
+
+    st.rerun()
+
+
+# ---------------------------------------------------------
+# RAG FUNCTION
+# ---------------------------------------------------------
+
+def ask_rag(question, k=3):
+
+    # -----------------------------------------------------
+    # STEP 1: GET PREVIOUS CONVERSATION
+    # -----------------------------------------------------
+
+    conversation_history = (
+        st.session_state.conversation_history
+    )
+
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in conversation_history[-6:]
+    )
+
+
+    # -----------------------------------------------------
+    # STEP 2: REWRITE FOLLOW-UP QUESTION
+    # -----------------------------------------------------
+
+    if conversation_history:
+
+        rewrite_prompt = f"""
+You are helping an NLP student.
+
+Previous conversation:
+
+{history_text}
+
+Current student question:
+
+{question}
+
+Rewrite the current question as a complete standalone question
+that can be used to search an NLP knowledge base.
+
+If the current question already makes sense by itself,
+return it unchanged.
+
+If the question uses words such as:
+"it", "this", "that", "they", "them",
+"explain more", "explain it", "why is it useful",
+understand what the student is referring to
+from the previous conversation.
+
+Do not answer the question.
+
+Only return the rewritten question.
+"""
+
+        rewrite_response = llm.invoke(
+            rewrite_prompt
+        )
+
+        rewrite_content = rewrite_response.content
+
+        if isinstance(
+            rewrite_content,
+            str
+        ):
+
+            standalone_question = rewrite_content
+
+        elif isinstance(
+            rewrite_content,
+            list
+        ):
+
+            standalone_question = "\n".join(
+                item.get(
+                    "text",
+                    ""
+                )
+                for item in rewrite_content
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "text"
+                )
+            )
+
+        else:
+
+            standalone_question = str(
+                rewrite_content
+            )
+
+    else:
+
+        standalone_question = question
+
+
+    # -----------------------------------------------------
+    # STEP 3: EXPAND ABBREVIATIONS
+    # -----------------------------------------------------
+
+    expanded_question = expand_abbreviations(
+        standalone_question
+    )
+
+
+    # -----------------------------------------------------
+    # STEP 4: CREATE QUESTION EMBEDDING
+    # -----------------------------------------------------
+
+    query_embedding = model.encode(
+        [expanded_question]
+    ).tolist()
+
+
+    # -----------------------------------------------------
+    # STEP 5: SEARCH CHROMADB
+    # -----------------------------------------------------
+
+    results = collection.query(
+        query_embeddings=query_embedding,
+        n_results=k,
+        include=[
+            "documents",
+            "metadatas",
+            "distances"
+        ]
+    )
+
+    docs = results["documents"][0]
+
+    metas = results["metadatas"][0]
+
+    distances = results["distances"][0]
+
+
+    # -----------------------------------------------------
+    # STEP 6: FILTER RELEVANT DOCUMENTS
+    # -----------------------------------------------------
+
+    threshold = 1.1
+
+    relevant_docs = []
+
+    relevant_metas = []
+
+    for doc, meta, distance in zip(
+        docs,
+        metas,
+        distances
+    ):
+
+        if distance <= threshold:
+
+            relevant_docs.append(
+                doc
+            )
+
+            relevant_metas.append(
+                meta
+            )
+
+
+    # -----------------------------------------------------
+    # STEP 7: NO RELEVANT INFORMATION
+    # -----------------------------------------------------
+
+    if not relevant_docs:
+
+        answer = (
+            "I couldn't find this information "
+            "in the provided documents."
+        )
+
+        # Save conversation
+        st.session_state.conversation_history.append({
+            "role": "user",
+            "content": question
+        })
+
+        st.session_state.conversation_history.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+        return answer, []
+
+
+    # -----------------------------------------------------
+    # STEP 8: PREPARE DOCUMENT CONTEXT
+    # -----------------------------------------------------
+
+    context = "\n\n".join(
+        f"Source: {meta.get('source', 'Unknown')}\n{doc}"
+        for doc, meta in zip(
+            relevant_docs,
+            relevant_metas
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # STEP 9: CREATE FINAL ANSWER PROMPT
+    # -----------------------------------------------------
+
+    prompt = f"""
+You are a friendly NLP tutor helping a college student.
+
+Use ONLY the information in the provided document context.
+
+Previous conversation:
+
+{history_text}
+
+Current student question:
+
+{question}
+
+Standalone version of the question:
+
+{standalone_question}
+
+Document context:
+
+{context}
+
+IMPORTANT:
+
+- Understand follow-up questions using the previous conversation.
+- Words such as "it", "this", "that", or "why"
+  may refer to something discussed previously.
+- Answer the student's current question directly.
+- Do NOT copy sentences from the document.
+- Explain the information in your own simple words.
+- Break difficult technical ideas into easy language.
+- Start with a short, direct answer.
+- Then explain it simply.
+- Use an example or analogy only when supported by the context.
+- Do not add outside information.
+- Keep the answer concise and useful for a student.
+- If the required information is not available in the documents,
+  say:
+
+"I couldn't find this information in the provided documents."
+
+- Do not mention that you are an AI model.
+
+Answer:
+"""
+
+
+    # -----------------------------------------------------
+    # STEP 10: GENERATE ANSWER
+    # -----------------------------------------------------
+
+    response = llm.invoke(
+        prompt
+    )
+
+    content = response.content
+
+
+    # -----------------------------------------------------
+    # STEP 11: EXTRACT RESPONSE TEXT
+    # -----------------------------------------------------
+
+    if isinstance(
+        content,
+        str
+    ):
+
+        answer = content
+
+    elif isinstance(
+        content,
+        list
+    ):
+
+        answer = "\n".join(
+            item.get(
+                "text",
+                ""
+            )
+            for item in content
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "text"
+            )
+        )
+
+    else:
+
+        answer = str(
+            content
+        )
+
+
+    # -----------------------------------------------------
+    # STEP 12: SAVE CONVERSATION
+    # -----------------------------------------------------
+
+    st.session_state.conversation_history.append({
+        "role": "user",
+        "content": question
+    })
+
+    st.session_state.conversation_history.append({
+        "role": "assistant",
+        "content": answer
+    })
+
+
+    # -----------------------------------------------------
+    # STEP 13: PREPARE SOURCES
+    # -----------------------------------------------------
+
+    not_found_message = (
+        "I couldn't find this information "
+        "in the provided documents."
+    )
+
+    if not_found_message in answer:
+
+        sources = []
+
+    else:
+
+        sources = []
+
+        for meta in relevant_metas:
+
+            source = meta.get(
+                "source",
+                "Unknown"
+            )
+
+            if source not in sources:
+
+                sources.append(
+                    source
+                )
+
+
+    # -----------------------------------------------------
+    # STEP 14: RETURN ANSWER AND SOURCES
+    # -----------------------------------------------------
+
+    return answer, sources
+
+
+# ---------------------------------------------------------
+# DISPLAY PREVIOUS CHAT MESSAGES
+# ---------------------------------------------------------
 
 for message in st.session_state.messages:
 
@@ -200,35 +602,42 @@ for message in st.session_state.messages:
                     )
 
 
-# --------------------------------------------------
-# 6. User Question
-# --------------------------------------------------
+# ---------------------------------------------------------
+# CHAT INPUT
+# ---------------------------------------------------------
 
 question = st.chat_input(
     "Ask a question about NLP..."
 )
 
 
+# ---------------------------------------------------------
+# PROCESS NEW QUESTION
+# ---------------------------------------------------------
+
 if question:
 
-    # Store user question
+    # Save user message
     st.session_state.messages.append({
         "role": "user",
         "content": question
     })
 
-    with st.chat_message("user"):
+
+    # Display user message
+    with st.chat_message(
+        "user"
+    ):
 
         st.markdown(
             question
         )
 
 
-    # --------------------------------------------------
-    # 7. Generate Answer
-    # --------------------------------------------------
-
-    with st.chat_message("assistant"):
+    # Generate assistant response
+    with st.chat_message(
+        "assistant"
+    ):
 
         with st.spinner(
             "Searching documents..."
@@ -236,209 +645,16 @@ if question:
 
             try:
 
-                # --------------------------------------------------
-                # Convert question into embedding
-                # --------------------------------------------------
-
-                question_embedding = model.encode(
+                answer, sources = ask_rag(
                     question
                 )
-
-
-                # --------------------------------------------------
-                # Search ChromaDB
-                # --------------------------------------------------
-
-                results = collection.query(
-                    query_embeddings=[
-                        question_embedding.tolist()
-                    ],
-                    n_results=3,
-                    include=[
-                        "documents",
-                        "metadatas",
-                        "distances"
-                    ]
-                )
-
-
-                docs = results["documents"][0]
-
-                metas = results["metadatas"][0]
-
-                distances = results["distances"][0]
-
-
-                # --------------------------------------------------
-                # Retrieval Threshold
-                # --------------------------------------------------
-
-                threshold = 1.2
-
-                relevant_docs = []
-
-                relevant_metas = []
-
-
-                for doc, meta, distance in zip(
-                    docs,
-                    metas,
-                    distances
-                ):
-
-                    if distance <= threshold:
-
-                        relevant_docs.append(
-                            doc
-                        )
-
-                        relevant_metas.append(
-                            meta
-                        )
-
-
-                # --------------------------------------------------
-                # No Relevant Information
-                # --------------------------------------------------
-
-                if not relevant_docs:
-
-                    answer = (
-                        "I couldn't find this information "
-                        "in the provided documents."
-                    )
-
-                    sources = []
-
-
-                # --------------------------------------------------
-                # Relevant Information Found
-                # --------------------------------------------------
-
-                else:
-
-                    context = "\n\n".join(
-                        relevant_docs
-                    )
-
-
-                    prompt = f"""
-You are an assistant answering questions
-from NLP course documents.
-
-Use ONLY the information provided in the context.
-
-Do not use general knowledge.
-
-If the answer is not available in the context, say:
-
-"I couldn't find this information in the provided documents."
-
-Give a clear and simple answer.
-Do not mention that you are an AI model.
-
-Context:
-
-{context}
-
-Question:
-
-{question}
-
-Answer:
-"""
-
-
-                    # --------------------------------------------------
-                    # Call Gemini
-                    # --------------------------------------------------
-
-                    response = llm.invoke(
-                        prompt
-                    )
-
-
-                    content = response.content
-
-
-                    # --------------------------------------------------
-                    # Process Gemini Response
-                    # --------------------------------------------------
-
-                    if isinstance(
-                        content,
-                        str
-                    ):
-
-                        answer = content
-
-
-                    elif isinstance(
-                        content,
-                        list
-                    ):
-
-                        answer_parts = []
-
-                        for item in content:
-
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "text"
-                            ):
-
-                                answer_parts.append(
-                                    item.get(
-                                        "text",
-                                        ""
-                                    )
-                                )
-
-                        answer = "\n".join(
-                            answer_parts
-                        )
-
-
-                    else:
-
-                        answer = str(
-                            content
-                        )
-
-
-                    # --------------------------------------------------
-                    # Collect Sources
-                    # --------------------------------------------------
-
-                    sources = []
-
-                    for meta in relevant_metas:
-
-                        source = meta.get(
-                            "source",
-                            "Unknown"
-                        )
-
-                        if source not in sources:
-
-                            sources.append(
-                                source
-                            )
-
-
-                # --------------------------------------------------
-                # Display Answer
-                # --------------------------------------------------
 
                 st.markdown(
                     answer
                 )
 
 
-                # --------------------------------------------------
-                # Display Sources
-                # --------------------------------------------------
-
+                # Display sources
                 if sources:
 
                     with st.expander(
@@ -453,10 +669,7 @@ Answer:
                             )
 
 
-                # --------------------------------------------------
-                # Save Assistant Message
-                # --------------------------------------------------
-
+                # Save assistant message
                 st.session_state.messages.append({
 
                     "role": "assistant",
