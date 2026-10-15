@@ -330,6 +330,12 @@ def is_follow_up_question(question):
 
         "why is it used",
 
+        "why we use",
+
+        "why do we use",
+
+        "why do we use this",
+
         "why is this useful",
 
         "why is it useful",
@@ -337,6 +343,14 @@ def is_follow_up_question(question):
         "what does this mean",
 
         "what does it mean",
+
+        "what is it used for",
+
+        "what is the use",
+
+        "why use it",
+
+        "why use this",
 
         "tell me more",
 
@@ -592,8 +606,9 @@ IMPORTANT:
 
 - Understand the current question using the previous conversation.
 - If the student says "it", "this", "that", "in simple",
-  "explain more", or "why is it used", understand what
-  they are referring to from the conversation.
+  "explain more", "why is it used", "why we use",
+  "why do we use this", or "what is it used for",
+  understand what they are referring to from the conversation.
 - If this is a follow-up question, explain the previous topic
   in the way the student is asking for.
 - Answer the current question directly.
