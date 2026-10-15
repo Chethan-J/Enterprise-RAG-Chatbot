@@ -94,7 +94,6 @@ if collection.count() == 0:
     ):
 
         all_documents = []
-
         all_metadatas = []
 
         # ----------------------------------------------------
@@ -104,7 +103,6 @@ if collection.count() == 0:
         for pdf_path in PDF_FILES:
 
             if not pdf_path.exists():
-
                 continue
 
             reader = PdfReader(
@@ -118,7 +116,6 @@ if collection.count() == 0:
                 page_text = page.extract_text()
 
                 if page_text:
-
                     pdf_text += page_text + " "
 
             # ------------------------------------------------
@@ -169,6 +166,7 @@ if collection.count() == 0:
                     "source": pdf_path.name,
 
                     "chunk_index": index
+
                 })
 
         # ----------------------------------------------------
@@ -197,6 +195,7 @@ if collection.count() == 0:
                 embeddings=embeddings,
 
                 metadatas=all_metadatas
+
             )
 
 
@@ -228,6 +227,7 @@ def load_llm():
         google_api_key=api_key,
 
         temperature=0
+
     )
 
 
@@ -247,6 +247,7 @@ abbreviation_map = {
     "tfidf": "term frequency inverse document frequency",
 
     "nlp": "natural language processing"
+
 }
 
 
@@ -271,6 +272,7 @@ def expand_abbreviations(question):
             expanded_question,
 
             flags=re.IGNORECASE
+
         )
 
     return expanded_question
@@ -312,6 +314,8 @@ def is_follow_up_question(question):
 
         "in simple",
 
+        "in simple?",
+
         "explain simply",
 
         "explain this",
@@ -338,7 +342,14 @@ def is_follow_up_question(question):
 
         "simplify this",
 
-        "simplify it"
+        "simplify it",
+
+        "explain in simple",
+
+        "explain in simple words",
+
+        "in simple words"
+
     ]
 
     return any(
@@ -346,6 +357,7 @@ def is_follow_up_question(question):
         phrase in question_lower
 
         for phrase in follow_up_phrases
+
     )
 
 
@@ -371,13 +383,15 @@ def ask_rag(question, k=3):
     if (
 
         follow_up
+
         and st.session_state.last_retrieved_docs
+
     ):
 
         # ----------------------------------------------------
         # Follow-up question
         #
-        # Reuse the previous retrieved documents.
+        # Reuse previous retrieved documents.
         # ----------------------------------------------------
 
         relevant_docs = (
@@ -505,6 +519,7 @@ def ask_rag(question, k=3):
             "role": "user",
 
             "content": question
+
         })
 
 
@@ -513,6 +528,7 @@ def ask_rag(question, k=3):
             "role": "assistant",
 
             "content": answer
+
         })
 
 
@@ -532,6 +548,7 @@ def ask_rag(question, k=3):
             relevant_docs,
 
             relevant_metas
+
         )
     )
 
@@ -546,6 +563,7 @@ def ask_rag(question, k=3):
 
         for message in
         st.session_state.conversation_history[-6:]
+
     )
 
 
@@ -576,6 +594,8 @@ IMPORTANT:
 - If the student says "it", "this", "that", "in simple",
   "explain more", or "why is it used", understand what
   they are referring to from the conversation.
+- If this is a follow-up question, explain the previous topic
+  in the way the student is asking for.
 - Answer the current question directly.
 - Do NOT copy sentences from the document.
 - Do NOT simply repeat the document definition.
@@ -634,6 +654,7 @@ Answer:
                 and item.get("type") == "text"
 
             )
+
         )
 
 
@@ -651,6 +672,7 @@ Answer:
         "role": "user",
 
         "content": question
+
     })
 
 
@@ -659,6 +681,7 @@ Answer:
         "role": "assistant",
 
         "content": answer
+
     })
 
 
@@ -681,14 +704,12 @@ Answer:
 
         sources = []
 
-
         for meta in relevant_metas:
 
             source = meta.get(
                 "source",
                 "Unknown"
             )
-
 
             if source not in sources:
 
@@ -745,6 +766,26 @@ question = st.chat_input(
 
 if question:
 
+    # ========================================================
+    # TEMPORARY DEBUG INFORMATION
+    # ========================================================
+
+    st.sidebar.write(
+        "DEBUG - Last retrieved docs:",
+        len(st.session_state.last_retrieved_docs)
+    )
+
+    st.sidebar.write(
+        "DEBUG - Conversation history:",
+        len(st.session_state.conversation_history)
+    )
+
+    st.sidebar.write(
+        "DEBUG - Follow-up:",
+        is_follow_up_question(question)
+    )
+
+
     # --------------------------------------------------------
     # Display user question
     # --------------------------------------------------------
@@ -754,6 +795,7 @@ if question:
         "role": "user",
 
         "content": question
+
     })
 
 
@@ -816,6 +858,7 @@ if question:
         "content": answer,
 
         "sources": sources
+
     })
 
 
@@ -853,9 +896,11 @@ with st.sidebar:
         "Knowledge Base"
     )
 
+
     st.write(
         "NLP Units 1–2"
     )
+
 
     st.write(
         f"Stored chunks: {collection.count()}"
