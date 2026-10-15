@@ -75,12 +75,10 @@ def expand_abbreviations(question):
 @st.cache_resource
 def load_resources():
 
-    # Load embedding model
     model = SentenceTransformer(
         "all-MiniLM-L6-v2"
     )
 
-    # Connect to ChromaDB
     client = chromadb.PersistentClient(
         path=str(CHROMA_PATH)
     )
@@ -128,14 +126,12 @@ def load_resources():
 
                     text += " " + page_text
 
-            # Clean extracted text
             text = re.sub(
                 r"\s+",
                 " ",
                 text
             ).strip()
 
-            # Split document into chunks
             chunks = text_splitter.split_text(
                 text
             )
@@ -149,7 +145,6 @@ def load_resources():
                     "chunk_index": i
                 })
 
-        # Generate embeddings
         embeddings = model.encode(
             all_chunks,
             show_progress_bar=False
@@ -160,7 +155,6 @@ def load_resources():
             for i in range(len(all_chunks))
         ]
 
-        # Store in ChromaDB
         collection.upsert(
             ids=ids,
             documents=all_chunks,
@@ -169,7 +163,7 @@ def load_resources():
         )
 
     # -----------------------------------------------------
-    # LOAD GEMINI API KEY
+    # GEMINI API KEY
     # -----------------------------------------------------
 
     api_key = os.environ.get(
@@ -195,7 +189,10 @@ def load_resources():
     return model, collection, llm
 
 
-# Load resources
+# ---------------------------------------------------------
+# LOAD RESOURCES
+# ---------------------------------------------------------
+
 model, collection, llm = load_resources()
 
 
@@ -214,7 +211,7 @@ if "conversation_history" not in st.session_state:
 
 
 # ---------------------------------------------------------
-# CLEAR CHAT BUTTON
+# CLEAR CHAT
 # ---------------------------------------------------------
 
 if st.sidebar.button("Clear Chat"):
@@ -232,13 +229,13 @@ if st.sidebar.button("Clear Chat"):
 
 def ask_rag(question, k=3):
 
-    # -----------------------------------------------------
-    # STEP 1: GET PREVIOUS CONVERSATION
-    # -----------------------------------------------------
-
     conversation_history = (
         st.session_state.conversation_history
     )
+
+    # -----------------------------------------------------
+    # STEP 1: GET PREVIOUS CONVERSATION
+    # -----------------------------------------------------
 
     history_text = "\n".join(
         f"{message['role']}: {message['content']}"
@@ -247,74 +244,78 @@ def ask_rag(question, k=3):
 
 
     # -----------------------------------------------------
-    # STEP 2: REWRITE FOLLOW-UP QUESTION
+    # STEP 2: FIND PREVIOUS USER QUESTION
     # -----------------------------------------------------
 
-    if conversation_history:
+    previous_user_question = ""
 
-        rewrite_prompt = f"""
-You are helping an NLP student.
+    for message in reversed(
+        conversation_history
+    ):
 
-Previous conversation:
+        if message["role"] == "user":
 
-{history_text}
+            previous_user_question = message["content"]
 
-Current student question:
+            break
 
-{question}
 
-Rewrite the current question as a complete standalone question
-that can be used to search an NLP knowledge base.
+    # -----------------------------------------------------
+    # STEP 3: DETECT FOLLOW-UP QUESTION
+    # -----------------------------------------------------
 
-If the current question already makes sense by itself,
-return it unchanged.
+    question_lower = question.lower().strip()
 
-If the question uses words such as:
-"it", "this", "that", "they", "them",
-"explain more", "explain it", "why is it useful",
-understand what the student is referring to
-from the previous conversation.
+    follow_up_words = [
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "them",
+        "they",
+        "why",
+        "how",
+        "explain",
+        "simple",
+        "simply",
+        "more",
+        "useful",
+        "use",
+        "importance"
+    ]
 
-Do not answer the question.
+    question_words = question_lower.split()
 
-Only return the rewritten question.
-"""
+    is_short_question = (
+        len(question_words) <= 8
+    )
 
-        rewrite_response = llm.invoke(
-            rewrite_prompt
+    contains_follow_up_word = any(
+        word in question_words
+        for word in follow_up_words
+    )
+
+    is_follow_up = (
+        bool(previous_user_question)
+        and (
+            is_short_question
+            or contains_follow_up_word
         )
+    )
 
-        rewrite_content = rewrite_response.content
 
-        if isinstance(
-            rewrite_content,
-            str
-        ):
+    # -----------------------------------------------------
+    # STEP 4: CREATE RETRIEVAL QUESTION
+    # -----------------------------------------------------
 
-            standalone_question = rewrite_content
+    if is_follow_up:
 
-        elif isinstance(
-            rewrite_content,
-            list
-        ):
-
-            standalone_question = "\n".join(
-                item.get(
-                    "text",
-                    ""
-                )
-                for item in rewrite_content
-                if (
-                    isinstance(item, dict)
-                    and item.get("type") == "text"
-                )
-            )
-
-        else:
-
-            standalone_question = str(
-                rewrite_content
-            )
+        standalone_question = (
+            previous_user_question
+            + " "
+            + question
+        )
 
     else:
 
@@ -322,7 +323,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 3: EXPAND ABBREVIATIONS
+    # STEP 5: EXPAND ABBREVIATIONS
     # -----------------------------------------------------
 
     expanded_question = expand_abbreviations(
@@ -331,7 +332,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 4: CREATE QUESTION EMBEDDING
+    # STEP 6: CREATE QUESTION EMBEDDING
     # -----------------------------------------------------
 
     query_embedding = model.encode(
@@ -340,7 +341,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 5: SEARCH CHROMADB
+    # STEP 7: SEARCH CHROMADB
     # -----------------------------------------------------
 
     results = collection.query(
@@ -361,7 +362,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 6: FILTER RELEVANT DOCUMENTS
+    # STEP 8: FILTER RELEVANT DOCUMENTS
     # -----------------------------------------------------
 
     threshold = 1.1
@@ -388,7 +389,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 7: NO RELEVANT INFORMATION
+    # STEP 9: NO RELEVANT INFORMATION
     # -----------------------------------------------------
 
     if not relevant_docs:
@@ -398,7 +399,6 @@ Only return the rewritten question.
             "in the provided documents."
         )
 
-        # Save conversation
         st.session_state.conversation_history.append({
             "role": "user",
             "content": question
@@ -413,7 +413,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 8: PREPARE DOCUMENT CONTEXT
+    # STEP 10: PREPARE DOCUMENT CONTEXT
     # -----------------------------------------------------
 
     context = "\n\n".join(
@@ -426,7 +426,7 @@ Only return the rewritten question.
 
 
     # -----------------------------------------------------
-    # STEP 9: CREATE FINAL ANSWER PROMPT
+    # STEP 11: CREATE FINAL ANSWER PROMPT
     # -----------------------------------------------------
 
     prompt = f"""
@@ -442,10 +442,6 @@ Current student question:
 
 {question}
 
-Standalone version of the question:
-
-{standalone_question}
-
 Document context:
 
 {context}
@@ -453,19 +449,21 @@ Document context:
 IMPORTANT:
 
 - Understand follow-up questions using the previous conversation.
-- Words such as "it", "this", "that", or "why"
-  may refer to something discussed previously.
-- Answer the student's current question directly.
-- Do NOT copy sentences from the document.
+- If the student says "it", "this", "that", "why",
+  "explain more", "explain simply", or similar,
+  understand what topic they are referring to.
+- Answer the current question directly.
+- Do NOT start the answer with "Based on the provided documents".
+- Do NOT copy sentences directly from the documents.
 - Explain the information in your own simple words.
 - Break difficult technical ideas into easy language.
-- Start with a short, direct answer.
-- Then explain it simply.
-- Use an example or analogy only when supported by the context.
+- Start with a short direct answer.
+- Then explain it clearly.
+- Use a simple example when the example is supported by the context.
 - Do not add outside information.
-- Keep the answer concise and useful for a student.
-- If the required information is not available in the documents,
-  say:
+- Keep the answer concise and useful for a college student.
+- If the required information is not available in the context,
+  say exactly:
 
 "I couldn't find this information in the provided documents."
 
@@ -476,7 +474,7 @@ Answer:
 
 
     # -----------------------------------------------------
-    # STEP 10: GENERATE ANSWER
+    # STEP 12: GENERATE ANSWER
     # -----------------------------------------------------
 
     response = llm.invoke(
@@ -487,7 +485,7 @@ Answer:
 
 
     # -----------------------------------------------------
-    # STEP 11: EXTRACT RESPONSE TEXT
+    # STEP 13: EXTRACT RESPONSE TEXT
     # -----------------------------------------------------
 
     if isinstance(
@@ -522,7 +520,7 @@ Answer:
 
 
     # -----------------------------------------------------
-    # STEP 12: SAVE CONVERSATION
+    # STEP 14: SAVE CONVERSATION
     # -----------------------------------------------------
 
     st.session_state.conversation_history.append({
@@ -537,7 +535,7 @@ Answer:
 
 
     # -----------------------------------------------------
-    # STEP 13: PREPARE SOURCES
+    # STEP 15: PREPARE SOURCES
     # -----------------------------------------------------
 
     not_found_message = (
@@ -568,14 +566,14 @@ Answer:
 
 
     # -----------------------------------------------------
-    # STEP 14: RETURN ANSWER AND SOURCES
+    # STEP 16: RETURN RESULT
     # -----------------------------------------------------
 
     return answer, sources
 
 
 # ---------------------------------------------------------
-# DISPLAY PREVIOUS CHAT MESSAGES
+# DISPLAY PREVIOUS MESSAGES
 # ---------------------------------------------------------
 
 for message in st.session_state.messages:
@@ -612,19 +610,16 @@ question = st.chat_input(
 
 
 # ---------------------------------------------------------
-# PROCESS NEW QUESTION
+# PROCESS QUESTION
 # ---------------------------------------------------------
 
 if question:
 
-    # Save user message
     st.session_state.messages.append({
         "role": "user",
         "content": question
     })
 
-
-    # Display user message
     with st.chat_message(
         "user"
     ):
@@ -633,8 +628,6 @@ if question:
             question
         )
 
-
-    # Generate assistant response
     with st.chat_message(
         "assistant"
     ):
@@ -653,8 +646,6 @@ if question:
                     answer
                 )
 
-
-                # Display sources
                 if sources:
 
                     with st.expander(
@@ -668,8 +659,6 @@ if question:
                                 source
                             )
 
-
-                # Save assistant message
                 st.session_state.messages.append({
 
                     "role": "assistant",
@@ -679,7 +668,6 @@ if question:
                     "sources": sources
 
                 })
-
 
             except Exception as e:
 
