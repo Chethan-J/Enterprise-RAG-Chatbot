@@ -203,10 +203,12 @@ abbreviation_map = {
     "ml": "machine learning",
     "ai": "artificial intelligence",
     "dl": "deep learning",
+    "ml": "machine learning",
 
     "wt": "what",
     "wht": "what",
     "hw": "how",
+    "y": "why"
 
     "bcz": "because",
     "bc": "because",
