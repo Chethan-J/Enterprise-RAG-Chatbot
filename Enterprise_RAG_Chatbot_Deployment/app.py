@@ -12,20 +12,15 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-# ============================================================
+# =====================================================
 # PAGE CONFIGURATION
-# ============================================================
+# =====================================================
 
 st.set_page_config(
     page_title="Enterprise RAG Chatbot",
     page_icon="🤖",
     layout="wide"
 )
-
-
-# ============================================================
-# PROJECT PATHS
-# ============================================================
 
 BASE_DIR = Path(__file__).parent
 
@@ -37,20 +32,20 @@ PDF_FILES = [
 CHROMA_PATH = BASE_DIR / "chroma_db"
 
 
-# ============================================================
-# TITLE
-# ============================================================
+# =====================================================
+# PAGE TITLE
+# =====================================================
 
 st.title("🤖 Enterprise Knowledge RAG Chatbot")
 
 st.caption(
-    "Ask questions about the information available in the NLP knowledge base."
+    "Ask questions about the information in your knowledge base."
 )
 
 
-# ============================================================
+# =====================================================
 # LOAD EMBEDDING MODEL
-# ============================================================
+# =====================================================
 
 @st.cache_resource
 def load_embedding_model():
@@ -60,9 +55,9 @@ def load_embedding_model():
 model = load_embedding_model()
 
 
-# ============================================================
+# =====================================================
 # LOAD CHROMADB
-# ============================================================
+# =====================================================
 
 @st.cache_resource
 def load_chroma_collection():
@@ -81,13 +76,13 @@ def load_chroma_collection():
 collection = load_chroma_collection()
 
 
-# ============================================================
+# =====================================================
 # CREATE KNOWLEDGE BASE IF EMPTY
-# ============================================================
+# =====================================================
 
 if collection.count() == 0:
 
-    with st.spinner("Preparing the knowledge base for the first time..."):
+    with st.spinner("Preparing knowledge base..."):
 
         all_documents = []
         all_metadatas = []
@@ -114,21 +109,12 @@ if collection.count() == 0:
                 pdf_text
             ).strip()
 
-            text_splitter = RecursiveCharacterTextSplitter(
+            splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
-                chunk_overlap=150,
-                separators=[
-                    ". ",
-                    "? ",
-                    "! ",
-                    "; ",
-                    ", ",
-                    " ",
-                    ""
-                ]
+                chunk_overlap=150
             )
 
-            chunks = text_splitter.split_text(pdf_text)
+            chunks = splitter.split_text(pdf_text)
 
             for index, chunk in enumerate(chunks):
 
@@ -146,8 +132,8 @@ if collection.count() == 0:
             ).tolist()
 
             ids = [
-                f"chunk_{index}"
-                for index in range(len(all_documents))
+                f"chunk_{i}"
+                for i in range(len(all_documents))
             ]
 
             collection.upsert(
@@ -158,15 +144,13 @@ if collection.count() == 0:
             )
 
         else:
-            st.error(
-                "No PDF documents were found. "
-                "Please check your PDF filenames."
-            )
+
+            st.error("No PDF documents found.")
 
 
-# ============================================================
-# GEMINI API
-# ============================================================
+# =====================================================
+# GEMINI MODEL
+# =====================================================
 
 api_key = os.environ.get("GOOGLE_API_KEY")
 
@@ -188,9 +172,9 @@ def load_llm():
 llm = load_llm()
 
 
-# ============================================================
-# ABBREVIATION EXPANSION
-# ============================================================
+# =====================================================
+# ABBREVIATION MAP
+# =====================================================
 
 abbreviation_map = {
 
@@ -203,12 +187,10 @@ abbreviation_map = {
     "ml": "machine learning",
     "ai": "artificial intelligence",
     "dl": "deep learning",
-    "ml": "machine learning",
 
     "wt": "what",
     "wht": "what",
     "hw": "how",
-    "y": "why"
 
     "bcz": "because",
     "bc": "because",
@@ -223,50 +205,57 @@ abbreviation_map = {
 }
 
 
+# =====================================================
+# NORMALIZE USER QUESTION
+# =====================================================
+
 def expand_abbreviations(question):
 
-    expanded_question = question.strip()
+    expanded = question.strip()
 
-    # Handle one-letter texting abbreviations
-    # only when they appear as separate words.
+    # Handle "y" as "why" when it begins a question.
 
-    expanded_question = re.sub(
-        r"^\s*y(?=\s)",
+    expanded = re.sub(
+        r"^\s*y(?=\s|$)",
         "why",
-        expanded_question,
+        expanded,
+        count=1,
         flags=re.IGNORECASE
     )
 
-    expanded_question = re.sub(
-        r"\by\b(?=\s+(?:this|that|it|use|useful|we|do|is)\b)",
+    # Handle "y" in common follow-up phrases.
+
+    expanded = re.sub(
+        r"\by(?=\s+(this|that|it|we|do|is|use|useful)\b)",
         "why",
-        expanded_question,
+        expanded,
         flags=re.IGNORECASE
     )
 
-    expanded_question = re.sub(
+    # Handle other one-letter texting words.
+
+    expanded = re.sub(
         r"\bu\b",
         "you",
-        expanded_question,
+        expanded,
         flags=re.IGNORECASE
     )
 
-    expanded_question = re.sub(
+    expanded = re.sub(
         r"\bur\b",
         "your",
-        expanded_question,
+        expanded,
         flags=re.IGNORECASE
     )
 
-    expanded_question = re.sub(
+    expanded = re.sub(
         r"\br\b",
         "are",
-        expanded_question,
+        expanded,
         flags=re.IGNORECASE
     )
 
-    # Expand the remaining abbreviations.
-    # Longer abbreviations are processed first.
+    # Handle other abbreviations, longest first.
 
     for abbreviation in sorted(
         abbreviation_map,
@@ -282,19 +271,68 @@ def expand_abbreviations(question):
             + r"\b"
         )
 
-        expanded_question = re.sub(
+        expanded = re.sub(
             pattern,
             meaning,
-            expanded_question,
+            expanded,
             flags=re.IGNORECASE
         )
 
-    return expanded_question
+    return expanded
 
 
-# ============================================================
+# =====================================================
+# FOLLOW-UP DETECTION
+# =====================================================
+
+def is_follow_up_question(question):
+
+    question = question.lower().strip()
+
+    follow_up_phrases = [
+
+        "why this",
+        "why that",
+        "why it",
+        "why is this",
+        "why is it",
+        "why we use",
+        "why do we use",
+        "why is this used",
+        "why is it used",
+
+        "explain this",
+        "explain it",
+        "explain more",
+        "explain simply",
+
+        "in simple",
+        "in simple words",
+        "in easy words",
+        "more simply",
+
+        "what does this mean",
+        "what does it mean",
+
+        "tell me more",
+        "simplify this",
+        "simplify it",
+
+        "how this works",
+        "how it works",
+        "how does this work",
+        "how does it work"
+    ]
+
+    return any(
+        phrase in question
+        for phrase in follow_up_phrases
+    )
+
+
+# =====================================================
 # SESSION STATE
-# ============================================================
+# =====================================================
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -309,96 +347,41 @@ if "last_retrieved_metas" not in st.session_state:
     st.session_state.last_retrieved_metas = []
 
 
-# ============================================================
-# FOLLOW-UP QUESTION DETECTION
-# ============================================================
-
-def is_follow_up_question(question):
-
-    question_lower = question.lower().strip()
-
-    follow_up_phrases = [
-
-        "in simple",
-        "in simple words",
-        "explain simply",
-        "explain this",
-        "explain it",
-        "explain more",
-        "more simply",
-
-        "why this",
-        "why that",
-        "why it",
-        "why is this",
-        "why is it",
-        "why we use",
-        "why do we use",
-        "why is this used",
-        "why is it used",
-        "why this is used",
-        "why is this useful",
-        "why is it useful",
-
-        "what does this mean",
-        "what does it mean",
-        "what is this used for",
-        "what is it used for",
-
-        "tell me more",
-        "simplify this",
-        "simplify it",
-
-        "how this works",
-        "how it works",
-        "how does this work",
-        "how does it work"
-    ]
-
-    return any(
-        phrase in question_lower
-        for phrase in follow_up_phrases
-    )
-
-
-# ============================================================
+# =====================================================
 # RAG FUNCTION
-# ============================================================
+# =====================================================
 
 def ask_rag(question, k=3):
 
-    # Normalize the question first.
+    # Normalize the question.
 
     expanded_question = expand_abbreviations(question)
-
-    # Detect follow-up using the normalized question.
 
     follow_up = is_follow_up_question(
         expanded_question
     )
 
-    # ========================================================
-    # RETRIEVAL
-    # ========================================================
+    # =================================================
+    # RETRIEVE DOCUMENTS
+    # =================================================
 
     if (
         follow_up
         and st.session_state.last_retrieved_docs
     ):
 
-        # Reuse the documents from the previous question.
+        relevant_docs = st.session_state.last_retrieved_docs
 
-        relevant_docs = (
-            st.session_state.last_retrieved_docs
-        )
-
-        relevant_metas = (
-            st.session_state.last_retrieved_metas
-        )
+        relevant_metas = st.session_state.last_retrieved_metas
 
     else:
 
-        # Perform fresh retrieval for a new question.
+        if collection.count() == 0:
+
+            return (
+                "The knowledge base is empty. Please check the PDF files.",
+                []
+            )
 
         query_embedding = model.encode(
             [expanded_question]
@@ -418,8 +401,6 @@ def ask_rag(question, k=3):
         metas = results["metadatas"][0]
         distances = results["distances"][0]
 
-        threshold = 1.1
-
         relevant_docs = []
         relevant_metas = []
 
@@ -429,24 +410,18 @@ def ask_rag(question, k=3):
             distances
         ):
 
-            if distance <= threshold:
+            if distance <= 1.1:
 
                 relevant_docs.append(doc)
                 relevant_metas.append(meta)
 
-        # Save retrieved documents for follow-ups.
+        st.session_state.last_retrieved_docs = relevant_docs
 
-        st.session_state.last_retrieved_docs = (
-            relevant_docs
-        )
+        st.session_state.last_retrieved_metas = relevant_metas
 
-        st.session_state.last_retrieved_metas = (
-            relevant_metas
-        )
-
-    # ========================================================
-    # NO RELEVANT INFORMATION
-    # ========================================================
+    # =================================================
+    # CHECK RETRIEVAL
+    # =================================================
 
     if not relevant_docs:
 
@@ -467,9 +442,9 @@ def ask_rag(question, k=3):
 
         return answer, []
 
-    # ========================================================
-    # DOCUMENT CONTEXT
-    # ========================================================
+    # =================================================
+    # PREPARE CONTEXT
+    # =================================================
 
     context = "\n\n".join(
 
@@ -481,105 +456,79 @@ def ask_rag(question, k=3):
         )
     )
 
-    # ========================================================
-    # CONVERSATION HISTORY
-    # ========================================================
-
-    history_text = "\n".join(
+    history = "\n".join(
 
         f"{message['role']}: {message['content']}"
 
-        for message in
-        st.session_state.conversation_history[-6:]
+        for message in st.session_state.conversation_history[-6:]
     )
 
-    # ========================================================
+    # =================================================
     # GEMINI PROMPT
-    # ========================================================
+    # =================================================
 
     prompt = f"""
-You are a friendly NLP tutor helping a college student.
-
-Use ONLY the information in the provided document context.
+You are a friendly tutor helping a college student.
 
 Previous conversation:
+{history}
 
-{history_text}
-
-Original student question:
-
+Original question:
 {question}
 
-Normalized question:
-
+Corrected question:
 {expanded_question}
 
-Document context:
-
+Document information:
 {context}
 
-IMPORTANT INSTRUCTIONS:
+Instructions:
 
-- Understand common texting abbreviations.
-- Use the normalized question to understand the student's meaning.
-- Understand follow-up questions using previous conversation.
-- If the student says "it", "this", "that", "why this",
-  "in simple", or "explain more", identify the topic from
-  the previous conversation.
-- Answer the current question directly.
-- Do NOT copy sentences from the document.
-- Do NOT simply repeat the document definition.
-- Explain the information in your own simple words.
-- Use easy language suitable for a college student.
-- Start with a short, direct answer.
-- Then explain it briefly.
-- Use an example only when supported by the document.
-- Do not add outside information.
-- Do not say "Based on the provided documents".
-- Do not mention that you are an AI model.
-- Keep the answer concise and useful for studying.
+1. Understand texting abbreviations using the corrected question.
+2. Understand follow-up questions from previous conversation.
+3. If the user asks "why this?", identify the previous topic.
+4. Answer in simple, student-friendly language.
+5. Explain in your own words. Do not copy the PDF.
+6. Answer the exact question.
+7. Use ONLY the document information.
+8. Do not invent facts or use outside knowledge.
+9. Give a short example when the documents support it.
+10. Keep the answer clear and concise.
 
-If the required information is not available in the
-document context, say exactly:
+If the required information is not in the document context,
+reply exactly:
 
 I couldn't find this information in the provided documents.
 
 Answer:
 """
 
-    # ========================================================
+    # =================================================
     # GENERATE ANSWER
-    # ========================================================
+    # =================================================
 
     response = llm.invoke(prompt)
 
-    content = response.content
+    if isinstance(response.content, str):
 
-    if isinstance(content, str):
+        answer = response.content
 
-        answer = content
-
-    elif isinstance(content, list):
+    elif isinstance(response.content, list):
 
         answer = "\n".join(
-
             item.get("text", "")
-
-            for item in content
-
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "text"
-            )
+            for item in response.content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
         )
 
     else:
 
-        answer = str(content)
+        answer = str(response.content)
 
-    # ========================================================
+    # =================================================
     # SAVE CONVERSATION
-    # ========================================================
+    # =================================================
 
     st.session_state.conversation_history.append({
         "role": "user",
@@ -591,39 +540,27 @@ Answer:
         "content": answer
     })
 
-    # ========================================================
+    # =================================================
     # SOURCES
-    # ========================================================
+    # =================================================
 
-    not_found_message = (
-        "I couldn't find this information "
-        "in the provided documents."
-    )
-
-    if not_found_message in answer:
+    if "I couldn't find this information" in answer:
 
         sources = []
 
     else:
 
-        sources = []
-
-        for meta in relevant_metas:
-
-            source = meta.get(
-                "source",
-                "Unknown"
-            )
-
-            if source not in sources:
-                sources.append(source)
+        sources = list(dict.fromkeys(
+            meta.get("source", "Unknown")
+            for meta in relevant_metas
+        ))
 
     return answer, sources
 
 
-# ============================================================
-# DISPLAY EXISTING CHAT
-# ============================================================
+# =====================================================
+# DISPLAY CHAT HISTORY
+# =====================================================
 
 for message in st.session_state.messages:
 
@@ -631,29 +568,26 @@ for message in st.session_state.messages:
 
         st.markdown(message["content"])
 
-        if (
-            message["role"] == "assistant"
-            and message.get("sources")
-        ):
+        if message.get("sources"):
 
             with st.expander("📚 Sources"):
 
                 for source in message["sources"]:
-                    st.write(f"- {source}")
+                    st.write(source)
 
 
-# ============================================================
+# =====================================================
 # CHAT INPUT
-# ============================================================
+# =====================================================
 
 question = st.chat_input(
-    "Ask a question about the NLP knowledge base..."
+    "Ask a question..."
 )
 
 
 if question:
 
-    # Display user question.
+    # Display original question.
 
     st.session_state.messages.append({
         "role": "user",
@@ -663,7 +597,22 @@ if question:
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Generate response.
+    # Normalize and show temporary debugging information.
+
+    expanded_question = expand_abbreviations(question)
+
+    with st.expander("Question processing (temporary debug)"):
+
+        st.write("Original question:", repr(question))
+
+        st.write("Expanded question:", repr(expanded_question))
+
+        st.write(
+            "Follow-up detected:",
+            is_follow_up_question(expanded_question)
+        )
+
+    # Generate answer.
 
     with st.chat_message("assistant"):
 
@@ -675,27 +624,20 @@ if question:
 
             except Exception as error:
 
-                answer = (
-                    "Something went wrong while generating "
-                    "the answer. Please try again."
-                )
+                answer = "Something went wrong. Please try again."
 
                 sources = []
 
-                st.error(f"Error: {error}")
+                st.error(str(error))
 
         st.markdown(answer)
-
-        # Display sources.
 
         if sources:
 
             with st.expander("📚 Sources"):
 
                 for source in sources:
-                    st.write(f"- {source}")
-
-    # Save assistant response.
+                    st.write(source)
 
     st.session_state.messages.append({
         "role": "assistant",
@@ -704,22 +646,22 @@ if question:
     })
 
 
-# ============================================================
+# =====================================================
 # SIDEBAR
-# ============================================================
+# =====================================================
 
 with st.sidebar:
 
     st.header("Chat Controls")
 
-    if st.button(
-        "🗑️ New Chat",
-        use_container_width=True
-    ):
+    if st.button("🗑️ New Chat", use_container_width=True):
 
         st.session_state.messages = []
+
         st.session_state.conversation_history = []
+
         st.session_state.last_retrieved_docs = []
+
         st.session_state.last_retrieved_metas = []
 
         st.rerun()
@@ -737,5 +679,5 @@ with st.sidebar:
     st.divider()
 
     st.caption(
-        "AI Retrieval-Augmented Generation (RAG) Chatbot"
+        "AI Retrieval-Augmented Generation Chatbot"
     )
