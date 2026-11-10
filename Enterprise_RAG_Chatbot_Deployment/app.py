@@ -152,7 +152,10 @@ if collection.count() == 0:
 # GEMINI MODEL
 # =====================================================
 
-api_key = os.environ.get("GOOGLE_API_KEY")
+api_key = st.secrets.get(
+    "GOOGLE_API_KEY",
+    os.environ.get("GOOGLE_API_KEY")
+)
 
 if not api_key:
     st.error("GOOGLE_API_KEY is not configured.")
@@ -192,6 +195,11 @@ abbreviation_map = {
     "wht": "what",
     "hw": "how",
 
+    "y": "why",
+    "u": "you",
+    "ur": "your",
+    "r": "are",
+
     "bcz": "because",
     "bc": "because",
 
@@ -206,56 +214,12 @@ abbreviation_map = {
 
 
 # =====================================================
-# NORMALIZE USER QUESTION
+# EXPAND ABBREVIATIONS
 # =====================================================
 
 def expand_abbreviations(question):
 
     expanded = question.strip()
-
-    # Handle "y" as "why" when it begins a question.
-
-    expanded = re.sub(
-        r"^\s*y(?=\s|$)",
-        "why",
-        expanded,
-        count=1,
-        flags=re.IGNORECASE
-    )
-
-    # Handle "y" in common follow-up phrases.
-
-    expanded = re.sub(
-        r"\by(?=\s+(this|that|it|we|do|is|use|useful)\b)",
-        "why",
-        expanded,
-        flags=re.IGNORECASE
-    )
-
-    # Handle other one-letter texting words.
-
-    expanded = re.sub(
-        r"\bu\b",
-        "you",
-        expanded,
-        flags=re.IGNORECASE
-    )
-
-    expanded = re.sub(
-        r"\bur\b",
-        "your",
-        expanded,
-        flags=re.IGNORECASE
-    )
-
-    expanded = re.sub(
-        r"\br\b",
-        "are",
-        expanded,
-        flags=re.IGNORECASE
-    )
-
-    # Handle other abbreviations, longest first.
 
     for abbreviation in sorted(
         abbreviation_map,
@@ -282,7 +246,31 @@ def expand_abbreviations(question):
 
 
 # =====================================================
-# FOLLOW-UP DETECTION
+# ABBREVIATION TESTING SECTION
+# =====================================================
+
+with st.expander("Test abbreviation recognition"):
+
+    test_question = st.text_input(
+        "Enter a question to test",
+        placeholder="Example: wt is ml"
+    )
+
+    if test_question:
+
+        st.write(
+            "Original question:",
+            test_question
+        )
+
+        st.write(
+            "Expanded question:",
+            expand_abbreviations(test_question)
+        )
+
+
+# =====================================================
+# FOLLOW-UP QUESTION DETECTION
 # =====================================================
 
 def is_follow_up_question(question):
@@ -300,6 +288,7 @@ def is_follow_up_question(question):
         "why do we use",
         "why is this used",
         "why is it used",
+        "why this is used",
 
         "explain this",
         "explain it",
@@ -353,13 +342,13 @@ if "last_retrieved_metas" not in st.session_state:
 
 def ask_rag(question, k=3):
 
-    # Normalize the question.
-
     expanded_question = expand_abbreviations(question)
 
     follow_up = is_follow_up_question(
         expanded_question
     )
+
+    retrieval_distances = []
 
     # =================================================
     # RETRIEVE DOCUMENTS
@@ -370,16 +359,26 @@ def ask_rag(question, k=3):
         and st.session_state.last_retrieved_docs
     ):
 
-        relevant_docs = st.session_state.last_retrieved_docs
+        relevant_docs = (
+            st.session_state.last_retrieved_docs
+        )
 
-        relevant_metas = st.session_state.last_retrieved_metas
+        relevant_metas = (
+            st.session_state.last_retrieved_metas
+        )
+
+        retrieval_method = "Previous retrieved documents"
 
     else:
+
+        retrieval_method = "Fresh document retrieval"
 
         if collection.count() == 0:
 
             return (
                 "The knowledge base is empty. Please check the PDF files.",
+                [],
+                retrieval_method,
                 []
             )
 
@@ -404,20 +403,34 @@ def ask_rag(question, k=3):
         relevant_docs = []
         relevant_metas = []
 
+        # Keep the existing distance threshold.
+
+        threshold = 1.1
+
         for doc, meta, distance in zip(
             docs,
             metas,
             distances
         ):
 
-            if distance <= 1.1:
+            retrieval_distances.append(
+                round(float(distance), 4)
+            )
+
+            if distance <= threshold:
 
                 relevant_docs.append(doc)
                 relevant_metas.append(meta)
 
-        st.session_state.last_retrieved_docs = relevant_docs
+        # Save the retrieved documents for follow-ups.
 
-        st.session_state.last_retrieved_metas = relevant_metas
+        st.session_state.last_retrieved_docs = (
+            relevant_docs
+        )
+
+        st.session_state.last_retrieved_metas = (
+            relevant_metas
+        )
 
     # =================================================
     # CHECK RETRIEVAL
@@ -440,10 +453,15 @@ def ask_rag(question, k=3):
             "content": answer
         })
 
-        return answer, []
+        return (
+            answer,
+            [],
+            retrieval_method,
+            retrieval_distances
+        )
 
     # =================================================
-    # PREPARE CONTEXT
+    # PREPARE DOCUMENT CONTEXT
     # =================================================
 
     context = "\n\n".join(
@@ -456,11 +474,16 @@ def ask_rag(question, k=3):
         )
     )
 
+    # =================================================
+    # PREPARE CONVERSATION HISTORY
+    # =================================================
+
     history = "\n".join(
 
         f"{message['role']}: {message['content']}"
 
-        for message in st.session_state.conversation_history[-6:]
+        for message in
+        st.session_state.conversation_history[-6:]
     )
 
     # =================================================
@@ -485,14 +508,14 @@ Document information:
 Instructions:
 
 1. Understand texting abbreviations using the corrected question.
-2. Understand follow-up questions from previous conversation.
+2. Understand follow-up questions using previous conversation.
 3. If the user asks "why this?", identify the previous topic.
-4. Answer in simple, student-friendly language.
+4. Answer in simple student-friendly language.
 5. Explain in your own words. Do not copy the PDF.
 6. Answer the exact question.
 7. Use ONLY the document information.
-8. Do not invent facts or use outside knowledge.
-9. Give a short example when the documents support it.
+8. Do not invent facts or use outside information.
+9. Give an example only when supported by the documents.
 10. Keep the answer clear and concise.
 
 If the required information is not in the document context,
@@ -555,7 +578,12 @@ Answer:
             for meta in relevant_metas
         ))
 
-    return answer, sources
+    return (
+        answer,
+        sources,
+        retrieval_method,
+        retrieval_distances
+    )
 
 
 # =====================================================
@@ -587,7 +615,7 @@ question = st.chat_input(
 
 if question:
 
-    # Display original question.
+    # Display user question.
 
     st.session_state.messages.append({
         "role": "user",
@@ -597,22 +625,17 @@ if question:
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Normalize and show temporary debugging information.
+    # Expand question.
 
     expanded_question = expand_abbreviations(question)
 
-    with st.expander("Question processing (temporary debug)"):
+    follow_up = is_follow_up_question(
+        expanded_question
+    )
 
-        st.write("Original question:", repr(question))
-
-        st.write("Expanded question:", repr(expanded_question))
-
-        st.write(
-            "Follow-up detected:",
-            is_follow_up_question(expanded_question)
-        )
-
-    # Generate answer.
+    # =================================================
+    # GENERATE ANSWER
+    # =================================================
 
     with st.chat_message("assistant"):
 
@@ -620,13 +643,19 @@ if question:
 
             try:
 
-                answer, sources = ask_rag(question)
+                answer, sources, method, distances = ask_rag(
+                    question
+                )
 
             except Exception as error:
 
-                answer = "Something went wrong. Please try again."
+                answer = (
+                    "Something went wrong. Please try again."
+                )
 
                 sources = []
+                method = "Error"
+                distances = []
 
                 st.error(str(error))
 
@@ -638,6 +667,44 @@ if question:
 
                 for source in sources:
                     st.write(source)
+
+        # =================================================
+        # DEBUG INFORMATION
+        # =================================================
+
+        with st.expander("Question processing and retrieval details"):
+
+            st.write(
+                "Original question:",
+                repr(question)
+            )
+
+            st.write(
+                "Expanded question:",
+                repr(expanded_question)
+            )
+
+            st.write(
+                "Follow-up detected:",
+                follow_up
+            )
+
+            st.write(
+                "Retrieval method:",
+                method
+            )
+
+            st.write(
+                "Retrieval distances:",
+                distances
+            )
+
+            st.write(
+                "Retrieved document count:",
+                len(st.session_state.last_retrieved_docs)
+            )
+
+    # Save assistant message.
 
     st.session_state.messages.append({
         "role": "assistant",
@@ -654,7 +721,10 @@ with st.sidebar:
 
     st.header("Chat Controls")
 
-    if st.button("🗑️ New Chat", use_container_width=True):
+    if st.button(
+        "🗑️ New Chat",
+        use_container_width=True
+    ):
 
         st.session_state.messages = []
 
